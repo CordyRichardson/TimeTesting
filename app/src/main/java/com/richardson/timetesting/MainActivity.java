@@ -1,179 +1,294 @@
 package com.richardson.timetesting;
 
+import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
-import android.os.AsyncTask;
 import android.os.Bundle;
 import android.security.KeyChain;
 import android.security.KeyChainAliasCallback;
-import android.security.KeyChainException;
-import android.security.KeyPairGeneratorSpec;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.support.v7.app.AppCompatActivity;
+import android.util.Base64;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.security.InvalidAlgorithmParameterException;
-import java.security.InvalidKeyException;
+import java.math.BigInteger;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
 import java.security.KeyStore;
-import java.security.KeyStoreException;
-import java.security.NoSuchAlgorithmException;
-import java.security.SecureRandom;
-import java.security.cert.CertificateException;
+import java.security.PrivateKey;
+import java.security.cert.Certificate;
+import java.security.interfaces.RSAPublicKey;
+import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.logging.Logger;
 
-import javax.crypto.BadPaddingException;
 import javax.crypto.Cipher;
-import javax.crypto.IllegalBlockSizeException;
-import javax.crypto.KeyGenerator;
-import javax.crypto.NoSuchPaddingException;
-import javax.crypto.SecretKey;
-import javax.crypto.spec.IvParameterSpec;
-import javax.crypto.spec.SecretKeySpec;
+import javax.crypto.CipherInputStream;
+import javax.crypto.CipherOutputStream;
+import javax.security.auth.x500.X500Principal;
 
 
-public class MainActivity extends AppCompatActivity {
+public class MainActivity extends AppCompatActivity implements KeyChainAliasCallback {
     Logger logger = Logger.getLogger(MainActivity.class.getName());
-    final String testString = "Timer_Test_String_for_Yellow_Pepper_AvalPay";
-    final String sharedPrefName = "TestPrefs";
-    final String prefsKey = "prefsKey";
+    private static final String TEST_STRING= "Timer_Test_String_for_Yellow_Pepper_AvalPay";
+    private static final String KEY_CONTAINER = "testKeyContainer";
+    private static final String KEY_ALIAS = "testKey";
+    private static final String KEYCHAIN_NAME = "test_keyChain2";
     final String fileName = "testFile";
-    final String keyAlias = "testKeyAlias4";
-    final String cipherParams = "AES/ECB/NoPadding";
 
-    File file;
+    //algorithm/mode/padding strings
+    private static final String CIPHER_SUITE1 = "RSA/ECB/NoPadding";
+    private static final String CIPHER_SUITE2 = "RSA/ECB/PKCS1Padding";
+    private static final String CIPHER_SUITE3 = "RSA/ECB/OAEPWithSHA-1AndMGF1Padding";
+    private static final String CIPHER_SUITE4 = "RSA/ECB/OAEPWithSHA-224AndMGF1Padding";
+    private static final String CIPHER_SUITE5 = "RSA/ECB/OAEPWithSHA-256AndMGF1Padding";
+    private static final String CIPHER_SUITE6 = "RSA/ECB/OAEPWithSHA-384AndMGF1Padding";
+    private static final String CIPHER_SUITE7 = "RSA/ECB/OAEPWithSHA-512AndMGF1Padding";
+    private static final String CIPHER_SUITE8 = "RSA/ECB/OAEPPadding";
 
-    SecretKey secretKey = null;
-    byte[] encryptedBytes = null;
+    String cipherText = null;
+
+    final Context context = this;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
-        /**
-        initSharedPreferences();
-        try{
-                initInternalStorage();
-                timeGetStringFromInternalStorage();
-        } catch (IOException ex){}
 
-        timeGetStringFromSharedPreferences();
-        */
+        //initSharedPreferences();
+        initInternalStorage();
 
-        //checkKeyStore();
+        timeGetStringFromInternalStorage();
+        //timeGetStringFromSharedPreferences();
 
-        //doKeyChain();
-
-        encryptString();
-        for (int i = 0; i < 10; ++i) {
-            timeGetKeyandDecrypt();
-        }
-        //decryptString();
+        //createKeyPair();
+        //encryptString();
+        //timeDecryptText();
+        //checkKeyChainInstalled();
+        //installKeyChain();
     }
 
+    /**
+     * --KeyChain methods-----
+     */
+
+    private void installKeyChain(){
+        try{
+            KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
+            keyStore.load(null);
+
+            Certificate certificate = keyStore.getCertificate(KEY_ALIAS);
+            Intent installIntent = KeyChain.createInstallIntent();
+            installIntent.putExtra(KeyChain.EXTRA_CERTIFICATE, certificate.getEncoded());
+            installIntent.putExtra(KeyChain.EXTRA_NAME, KEYCHAIN_NAME);
+            startActivityForResult(installIntent, 1);
+        } catch(Exception ex){
+            ex.printStackTrace();
+        }
+    }
+
+    private PrivateKey getPrivateKey(){
+        try{
+            return KeyChain.getPrivateKey(context, KEYCHAIN_NAME);
+        } catch (Exception ex){
+            ex.printStackTrace();
+        }
+        return null;
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data){
+        if(requestCode == 1){
+            if(resultCode == Activity.RESULT_OK){
+                logger.info("Activity result OK");
+                chooseCert();
+            } else{
+                logger.info("Activity result problem");
+                super.onActivityResult(requestCode, resultCode, data);
+            }
+        }
+    }
+
+    private void chooseCert(){
+        KeyChain.choosePrivateKeyAlias(this, this,
+                new String[]{"rsa"},
+                null,
+                "localhost",
+                -1,
+                KEY_ALIAS);
+    }
+
+    @Override
+    public void alias(String alias){
+        //alias hardcoded for testing
+    }
+
+    /**
+     * ------ KeyStore methods ---- *
+     */
+
+    private void createKeyPair() {
+        KeyStore keyStore;
+        try{
+            keyStore = KeyStore.getInstance("AndroidKeyStore");
+            keyStore.load(null);
+
+            Calendar start = Calendar.getInstance();
+            Calendar end = Calendar.getInstance();
+            end.add(Calendar.YEAR, 1);
+
+            //Android level 23 Marshmallow
+            KeyGenParameterSpec specs = new KeyGenParameterSpec.Builder(
+                    KEY_ALIAS,
+                    KeyProperties.PURPOSE_DECRYPT)
+                    .setCertificateSubject(
+                            new X500Principal("CN=Cordy Richardson, O=TestAuthority"))
+                    .setCertificateSerialNumber(BigInteger.ONE)
+                    .setCertificateNotBefore(start.getTime())
+                    .setCertificateNotAfter(end.getTime())
+                    .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_RSA_PKCS1)
+                    .build();
+            /*
+            //for Android level 22 and below
+            KeyPairGeneratorSpec specs = new KeyPairGeneratorSpec.Builder(this)
+                    .setAlias(KEY_ALIAS)
+                    .setSubject(new X500Principal("CN=Cordy Richardson, O=TestAuthority"))
+                    .setSerialNumber(BigInteger.ONE)
+                    .setStartDate(start.getTime())
+                    .setEndDate(end.getTime())
+                    .build();
+                    */
+            KeyPairGenerator generator =
+                    KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_RSA, "AndroidKeyStore");
+            generator.initialize(specs);
+
+            KeyPair keys = generator.generateKeyPair();
+
+        } catch(Exception ex){
+            ex.printStackTrace();
+        }
+    }
+
+    private void encryptString(){
+        KeyStore keyStore;
+        try{
+            keyStore = KeyStore.getInstance("AndroidKeyStore");
+            keyStore.load(null);
+            KeyStore.PrivateKeyEntry privateKeyEntry =
+                    (KeyStore.PrivateKeyEntry)keyStore.getEntry(KEY_ALIAS, null);
+            RSAPublicKey publicKey = (RSAPublicKey)privateKeyEntry.getCertificate().getPublicKey();
+
+            //encrypt the text
+            Cipher cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
+            cipher.init(Cipher.ENCRYPT_MODE, publicKey);
+            ByteArrayOutputStream byteos = new ByteArrayOutputStream();
+            CipherOutputStream cipheros = new CipherOutputStream(byteos, cipher);
+            cipheros.write(TEST_STRING.getBytes("UTF-8"));
+            cipheros.close();
+
+            byte[] cipherBytes = byteos.toByteArray();
+            cipherText = new String(Base64.encodeToString(cipherBytes, Base64.DEFAULT));
+
+        } catch (Exception e){
+            e.printStackTrace();
+        }
+    }
+
+    private void decryptText(){
+        try{
+            KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
+            keyStore.load(null);
+            KeyStore.PrivateKeyEntry privateKeyEntry =
+                    (KeyStore.PrivateKeyEntry)keyStore.getEntry(KEY_ALIAS, null);
+
+            Cipher cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
+            cipher.init(Cipher.DECRYPT_MODE, privateKeyEntry.getPrivateKey());
+            CipherInputStream cipheris = new CipherInputStream(
+              new ByteArrayInputStream(Base64.decode(cipherText, Base64.DEFAULT)), cipher);
+
+            ArrayList<Byte> values = new ArrayList<>();
+            int nextByte;
+            while((nextByte = cipheris.read()) != -1){
+                values.add((byte)nextByte);
+            }
+
+            byte[] bytes = new byte[values.size()];
+            for(int i = 0; i < bytes.length; i++){
+                bytes[i] = values.get(i).byteValue();
+            }
+
+            String finalText = new String(bytes, 0, bytes.length, "UTF-8");
+            logger.info("Decrypted string: " + finalText);
+        } catch (Exception e){
+            e.printStackTrace();
+        }
+    }
+
+    private void timeDecryptText(){
+        long startTime = System.nanoTime();
+        decryptText();
+        long stopTime = System.nanoTime();
+
+        long diff = stopTime - startTime;
+
+        logger.info("GetPrefsTime: " + diff);
+    }
+
+    private void compareRSAAlgorithmCombinations(){
+
+    }
+
+    /**
+     * -- Shared preferences and internal storage methods--- *
+     */
+
     public void initSharedPreferences(){
-        SharedPreferences sharedPreferences = getSharedPreferences(sharedPrefName, MODE_PRIVATE);
+        SharedPreferences sharedPreferences = getSharedPreferences(KEY_CONTAINER, MODE_PRIVATE);
         SharedPreferences.Editor editor = sharedPreferences.edit();
-        editor.putString(prefsKey, testString);
+        editor.putString(KEY_ALIAS, TEST_STRING);
         editor.commit();
     }
 
-    public void initInternalStorage() throws IOException{
+    public void initInternalStorage(){
 
         File file = new File(getFilesDir(), fileName);
-        FileOutputStream fos = openFileOutput(fileName, MODE_PRIVATE);
-        fos.write(testString.getBytes());
-        fos.close();
-    }
-
-    public void encryptString(){
-
-        //1. generate secret key
-        final int keyLength = 256;
-        SecureRandom random = new SecureRandom();
         try{
-            KeyGenerator keyGen = KeyGenerator.getInstance("AES");
-            keyGen.init(keyLength, random);
-            secretKey = keyGen.generateKey();
-        } catch(NoSuchAlgorithmException ex){
+            FileOutputStream fos = openFileOutput(fileName, MODE_PRIVATE);
+            fos.write(TEST_STRING.getBytes());
+            fos.close();
+        }catch (IOException ex){
             ex.printStackTrace();
         }
 
-        //2. encode string
-        byte[] keyBytes = secretKey.getEncoded();
-        SecretKeySpec skeySpec = new SecretKeySpec(keyBytes, 0, keyBytes.length, "AES");
-        try{
-            Cipher cipher = Cipher.getInstance("AES");
-            cipher.init(Cipher.ENCRYPT_MODE, skeySpec, new IvParameterSpec(
-                    new byte[cipher.getBlockSize()]));
-            encryptedBytes = cipher.doFinal(testString.getBytes());
-
-        } catch(NoSuchAlgorithmException ex){
-            ex.printStackTrace();
-        } catch(NoSuchPaddingException ex){
-            ex.printStackTrace();
-        } catch (InvalidKeyException ex){
-            ex.printStackTrace();
-        } catch(InvalidAlgorithmParameterException ex){
-            ex.printStackTrace();
-        } catch (IllegalBlockSizeException ex){
-            ex.printStackTrace();
-        } catch(BadPaddingException ex){
-            ex.printStackTrace();
-        }
-
-        //3. store the encrypted password
-      //  SharedPreferences sharedPreferences = getSharedPreferences(sharedPrefName, MODE_PRIVATE);
-       // SharedPreferences.Editor editor = sharedPreferences.edit();
-        //editor.putString("testString", encryptedBytes.toString());
-        //editor.commit();
-        String returnedString = new String(encryptedBytes);
-        logger.info("Encrypted testString: " + returnedString);
-    }
-
-    public void decryptString(){
-
-        try{
-            Cipher cipher = Cipher.getInstance("AES");
-            cipher.init(Cipher.DECRYPT_MODE, secretKey, new IvParameterSpec(
-                    new byte[cipher.getBlockSize()]));
-            byte[] decryptedBytes = cipher.doFinal(encryptedBytes);
-            logger.info("Decrypted string: " + decryptedBytes.toString());
-        } catch (NoSuchAlgorithmException ex){
-            ex.printStackTrace();
-        } catch (NoSuchPaddingException ex){
-            ex.printStackTrace();
-        } catch (InvalidKeyException ex){
-            ex.printStackTrace();
-        } catch (InvalidAlgorithmParameterException ex){
-            ex.printStackTrace();
-        } catch (IllegalBlockSizeException ex){
-            ex.printStackTrace();
-        } catch (BadPaddingException ex){
-            ex.printStackTrace();
-        }
     }
 
     public void getStringFromSharedPreferences(){
-        SharedPreferences sharedPreferences = getSharedPreferences(sharedPrefName, 0);
-        String testString = sharedPreferences.getString(prefsKey, "test");
+        SharedPreferences sharedPreferences = getSharedPreferences(KEY_CONTAINER, 0);
+        String testString = sharedPreferences.getString(KEY_ALIAS, "test");
         logger.info("Preferences retrieved" + testString);
     }
 
-    public void getStringFromInternalStorage() throws IOException{
+    public void getStringFromInternalStorage(){
         String filePath = this.getFilesDir().getAbsolutePath()+'/'+fileName;
-        FileInputStream inputStream = new FileInputStream(filePath);
-        BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream));
-        String readString = reader.readLine();
-        logger.info("Getfile retrieved: " + readString);
-        inputStream.close();
+        try{
+            FileInputStream inputStream = new FileInputStream(filePath);
+            BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream));
+            String readString = reader.readLine();
+            logger.info("Getfile retrieved: " + readString);
+            inputStream.close();
+        } catch(IOException ex){
+            ex.printStackTrace();
+        }
+
     }
 
     public void timeGetStringFromSharedPreferences(){
@@ -186,7 +301,7 @@ public class MainActivity extends AppCompatActivity {
                 logger.info("GetPrefsTime: " + diff);
     }
 
-    public void timeGetStringFromInternalStorage() throws IOException{
+    public void timeGetStringFromInternalStorage(){
                 long startTime = System.nanoTime();
                 getStringFromInternalStorage();
                 long stopTime = System.nanoTime();
@@ -194,62 +309,6 @@ public class MainActivity extends AppCompatActivity {
                 long diff = stopTime - startTime;
 
                 logger.info("GetInteralStorage: " + diff);
-    }
-
-    public void timeGetKeyandDecrypt(){
-        long startTime = System.nanoTime();
-        decryptString();
-        long stopTime = System.nanoTime();
-
-        long diff = stopTime - startTime;
-
-        logger.info("Time to decipher: " + diff);
-    }
-
-    public void doKeyChain(){
-        KeyChainTask task = new KeyChainTask();
-        task.execute(this);
-    }
-
-    private class KeyChainTask extends AsyncTask<Context, Void, Void>{
-
-        public Void doInBackground(Context... params) {
-            Context context = params[0];
-
-            try {
-                KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
-                try{
-                    keyStore.load(null, null);
-
-
-
-                } catch (IOException ex){
-                    logger.info("IOException keychain get");
-                    ex.printStackTrace();
-                } catch (NoSuchAlgorithmException ex){
-                    logger.info("Keychain task no such algo");
-                    ex.printStackTrace();
-                } catch(CertificateException ex){
-                    logger.info("KeyChain Task Cert exception");
-                    ex.printStackTrace();
-                }
-                Intent intent = KeyChain.createInstallIntent();
-                intent.putExtra(KeyChain.EXTRA_NAME, keyStore.toString());
-                startActivity(intent);
-                SecretKey key = (SecretKey) KeyChain.getPrivateKey(context, keyAlias);
-                logger.info("Key from task: " + key.toString());
-
-            } catch (KeyStoreException ex){
-                logger.info("Keystore exception in async task");
-                ex.printStackTrace();
-            }catch (KeyChainException ex){
-                logger.info("keychain exception");
-                ex.printStackTrace();
-            } catch (InterruptedException ex){
-                logger.info("interrupted exception");
-            }
-            return null;
-        }
     }
 
 }
